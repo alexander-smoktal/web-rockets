@@ -1,0 +1,11 @@
+[package]
+
+name = "web-rockets"
+version = "0.0.1"
+authors = [ "Your name <you@example.com>" ]
+
+[dependencies]
+
+[[bin]]
+
+name = "hello_world"

@@ -1,0 +1,24 @@
+<!doctype html>
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Websockets</title>
+    <meta name="description" content="Websockets">
+    <meta name="author" content="Alexander Smoktal">
+  </head>
+
+  <body>
+    <center>
+        <form autocomplete="off" onsubmit="send_message(); return false;">
+          <textarea rows="15" cols="134" id="chat-window" style="max-height: 500px; min-height: 500px; resize: none" readonly></textarea>
+          <br>
+          <input id="chat-message" style="width: 50%" type="text">
+          <br><br>
+          <input type="button" value="Send" onclick="send_message()">
+        </form>
+    </center>
+  </body>
+
+  <script src="websockets.js"></script>
+</html>

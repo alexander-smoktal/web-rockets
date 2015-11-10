@@ -1,103 +1,104 @@
-use std::{ net, marker, io, thread, string, time };
-use std::sync::mpsc;
-use std::collections::vec_deque;
+use std::{ net, marker, io, collections,  };
+use std::str::FromStr;
 use std::io::Read;
 
-pub struct WebSocketServer<T, C> where T: WebSocketHandler<C> {
-    handler: T,                                    // User handler which implements callbacks
-    phantom: marker::PhantomData<C>,               // I need to use this to calm down the compiler
+use mio::*;
 
-    clients: vec_deque::VecDeque<(net::TcpStream, C, bool)>,  // All connected clients
+const SERVER: Token = Token(0);
+
+pub struct WebSocketServer<T, C> where T: WebSocketHandler<C> {
+    handler: T,                                         // User handler which implements callbacks
+    phantom: marker::PhantomData<C>,                    // I need to use this to calm down the compiler
+    listener: tcp::TcpListener,                         // Listens all incoming connections
+
+    clients: collections::HashMap<Token, (C, tcp::TcpStream)>, // List af all clients
+    client_tokens: usize                                       // Counter to assign tokens to clients
+}
+
+impl<T, C> Handler for WebSocketServer<T, C> where T: WebSocketHandler<C> {
+    type Timeout = ();
+    type Message = ();
+
+    fn ready(&mut self, main_loop: &mut EventLoop<Self>, token: Token, events: EventSet) {
+        match token {
+            // Got new connection. Let's add it to the list of clients and notify a user
+            SERVER => {
+                match self.listener.accept() {
+                    Ok(client) => {
+                        self.register_client(client, main_loop);
+                    },
+                    Err(e) => { println!("Error accepting a client: {}", e) }
+                }
+            }
+            ref t => {
+                // Client have disconnected
+                // TODO: Handle error
+                if events.is_error() || events.is_hup() {
+                    self.disconnect_client(token, main_loop);
+                    return;
+                }
+
+                // Client sent a message
+                match self.clients.get_mut(t) {
+                    Some(&mut (ref mut client, ref mut stream)) => {
+                        let ref mut buffer = [0; 1024];
+
+                        if let Ok(_) = stream.read(buffer) {
+                            self.handler.on_message(String::from_utf8_lossy(buffer).into_owned(), client)
+                        }
+                    },
+                    None => { println!("Failed to find a client, which sends a message {:?}", token); }
+                }
+            }
+        }
+    }
 }
 
 impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
-    fn new(handler: T, addr: &'static str) ->
-        io::Result<WebSocketServer<T, C>> {
+    fn new(handler: T, addr: &'static str) -> io::Result<WebSocketServer<T, C>> {
+        let formated_addr = net::SocketAddr::from_str(addr).unwrap();
+        let listener = try!(tcp::TcpListener::bind(&formated_addr));
 
         let mut result = WebSocketServer {
             handler: handler,
             phantom: marker::PhantomData,
-            clients: vec_deque::VecDeque::with_capacity(64),
+            listener:listener,
+            clients: collections::HashMap::new(),
+            client_tokens: 2
         };
-        try!(result.listen(addr));
+
+        let mut main_loop = try!(EventLoop::<Self>::new());
+        try!(main_loop.register(&result.listener, SERVER));
+        try!(main_loop.run(&mut result));
 
         return Ok(result)
     }
 
-    fn listen(&mut self, addr: &'static str) -> io::Result<()> {
-        // First start thread which accept incoming clients
-        let (incoming_clients_tx, incoming_clients) = mpsc::channel();
+    fn register_client(&mut self, client: Option<tcp::TcpStream>, main_loop: &mut EventLoop<Self>) {
+        if let Some(client) = client {
+            self.client_tokens += 1;
 
-        let incoming_thread = thread::Builder::new().name("Incoming thread".to_string()).spawn
-        (
-            move || {
-                let listener = net::TcpListener::bind(addr).unwrap();
-                for stream in listener.incoming() {
-                    if let Err(mpsc::SendError(_))  = incoming_clients_tx.send(stream) {
-                        println!("Error sending new incoming connection to the server. Is it alive?");
-                    }
+            match main_loop.register(&client, Token(self.client_tokens)) {
+                Err(e) => { println!("Error registering a client: {}", e) },
+                _ => {
+                    let addr = format!("{}", client.peer_addr().unwrap());
+
+                    let _ = self.clients.insert(Token(self.client_tokens),
+                                                (self.handler.on_connect(addr), client));
                 }
             }
-        );
-
-        // Then start our mainloop
-        loop {
-            // Get all new connections
-            match incoming_clients.try_recv() {
-                Ok(incoming_client) => { self.handle_new_connection(incoming_client) },
-                _ => { }
-            }
-
-            let mut size: isize = self.clients.len() as isize;
-            // Process all new messages
-            while size > 0 {
-                size -= 1;
-
-                let (mut stream, client, handshaked) = self.clients.pop_front().unwrap();
-
-                let mut buffer = [0; 1024];
-                match stream.read(&mut buffer) {
-                    Ok(size) => {
-                        println!("Size: {}", size);
-                        if size > 0 {
-                            println!("Got a fucking message of size {}: '{}'", size, string::String::from_utf8_lossy(&buffer));
-                            self.clients.push_back((stream, client, handshaked))
-                        } else {
-                            self.handler.on_disconnect(client);
-                        }
-                    }
-                    Err(e) => {
-                        if e.kind() != io::ErrorKind::TimedOut {
-                            println!("Error reading from the client socket: {}", e);
-                            self.handler.on_disconnect(client);
-                        }
-                    }
-                }
-            }
-
-            // To calm compiler
-            if self.clients.len() > 50 { break }
         }
-
-        incoming_thread.unwrap().join().unwrap();
-
-        return Ok(())
     }
 
-    fn handle_new_connection(&mut self, incoming_client: io::Result<net::TcpStream>) {
-         match incoming_client {
-            Ok(client) => {
-                let addr = client.peer_addr().unwrap();
-                match client.set_read_timeout(Some(time::Duration::new(1, 100))) {
-                    Ok(_) => {
-                        self.clients.push_back((client,
-                                                self.handler.on_connect(format!("{}", addr)),
-                                                false))
-                        }
-                    Err(e) => { println!("Can't set socket timeout: {}. Ignoring the client", e) }
+    fn disconnect_client(&mut self, token: Token, main_loop: &mut EventLoop<Self>) {
+        match self.clients.remove(&token) {
+            Some((client, stream)) => {
+                match main_loop.deregister(&stream) {
+                    Ok(_) => { self.handler.on_disconnect(client) },
+                    Err(e) => { println!("Failed do unregister a client {}", e) }
                 }
-            }
-            Err(e) => { println!("Error creating new connection {}", e) }
+            },
+            None => { println!("Failed to disconnect a client"); }
         }
     }
 }
@@ -108,6 +109,6 @@ pub trait WebSocketHandler<C>: Sized + marker::Sync {
     }
 
     fn on_connect(&self, addr: String) -> C;
-    fn on_message(&self, message: usize, client: &mut C);
+    fn on_message(&self, message: String, client: &mut C);
     fn on_disconnect(&self, client: C);
 }

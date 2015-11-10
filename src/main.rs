@@ -1,3 +1,5 @@
+extern crate mio;
+
 mod server;
 
 use server::WebSocketHandler;
@@ -14,8 +16,8 @@ impl server::WebSocketHandler<Client> for Server {
         return Client(42)
     }
 
-    fn on_message(&self, message: usize, client: &mut Client) {
-        println!("Got fucking message from client {:?} {}", client, message)
+    fn on_message(&self, message: String, client: &mut Client) {
+        println!("Got a message from the client {:?} {}", client, message)
     }
 
     fn on_disconnect(&self, client: Client) {
@@ -24,11 +26,9 @@ impl server::WebSocketHandler<Client> for Server {
 }
 
 fn main() {
-	let x = Server;
+    let x = Server;
     match x.listen("127.0.0.1:8081") {
         Err(e) => println!("Failed to host websocket server: {:?}", e),
         _ => ()
     }
-
-    println!("Hello, world!");
 }

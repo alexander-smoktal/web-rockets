@@ -11,6 +11,7 @@ use rustc_serialize::base64;
 use rustc_serialize::base64::ToBase64;
 
 use utils::*;
+use message;
 
 const SERVER: Token = Token(0);
 const WEBSOCKET_GUID: &'static str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -30,7 +31,8 @@ pub struct WebSocketServer<T, C> where T: WebSocketHandler<C> {
     // TcpStream - Stream we need to delete in case of disconnect
     // bool - If client was handshaked
     clients: collections::HashMap<Token, (C, tcp::TcpStream, bool)>,
-    tokens: TokenFactory                                // Counter to assign tokens to clients
+    tokens: TokenFactory,                               // Counter to assign tokens to clients
+    message_fac: message::MessageFactory                // Factory, which produces messages from a raw data
 }
 
 impl<T, C> Handler for WebSocketServer<T, C> where T: WebSocketHandler<C> {
@@ -67,7 +69,11 @@ impl<T, C> Handler for WebSocketServer<T, C> where T: WebSocketHandler<C> {
 
                             // Read a message from the client socket
                             match stream.read(buffer) {
-                                Ok(size) if *handshaked => { self.handler.on_message(slice_to_string(&buffer[..size]), client) }
+                                Ok(size) if *handshaked => {
+                                    if let Some(message) =  self.message_fac.parse(&buffer[..size], token) {
+                                        self.handler.on_message(message, client)
+                                    }
+                                }
                                 Ok(size) => {
                                     match Self::create_handshake_response(slice_to_string(&buffer[..size])) {
                                         Ok(response) => {
@@ -100,7 +106,8 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
             phantom: marker::PhantomData,
             listener:listener,
             clients: collections::HashMap::new(),
-            tokens: TokenFactory(1)
+            tokens: TokenFactory(1),
+            message_fac: message::MessageFactory::new()
         };
 
         let mut main_loop = try!(EventLoop::<Self>::new());
@@ -178,6 +185,6 @@ pub trait WebSocketHandler<C>: Sized + marker::Sync {
     }
 
     fn on_connect(&self, addr: String) -> C;
-    fn on_message(&self, message: String, client: &mut C);
+    fn on_message(&self, message: message::Message, client: &mut C);
     fn on_disconnect(&self, client: C);
 }

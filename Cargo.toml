@@ -1,8 +1,7 @@
 [package]
-
 name = "web-rockets"
 version = "0.0.1"
-authors = [ "Your name <you@example.com>" ]
+authors = [ "Alexander Smoktal <you@example.com>" ]
 
 [dependencies]
 mio = "0.4.4"
@@ -10,5 +9,8 @@ rust-crypto = "0.2.34"
 rustc-serialize = "0.3.16"
 
 [[bin]]
+name = "web-rockets"
 
-name = "hello_world"
+[[test]]
+name = "test"
+path = "test/test.rs"

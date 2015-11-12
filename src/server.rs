@@ -126,7 +126,7 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
         return Ok(())
     }
 
-    fn create_handshake_response(message: String) -> Result<String, String> {
+    pub fn create_handshake_response(message: String) -> Result<String, String> {
         // Check if we got valid handshake message from a client
         match message.find("Upgrade: websocket") {
             Some(_) => {

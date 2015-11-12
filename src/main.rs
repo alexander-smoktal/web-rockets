@@ -4,6 +4,7 @@ extern crate mio;
 extern crate crypto;
 extern crate rustc_serialize;
 
+mod utils;
 mod server;
 
 use server::WebSocketHandler;

@@ -10,7 +10,8 @@ pub struct Message {
     len: u64,
     opcode: u8,
     is_final: bool,
-    payload: Vec<u8>
+    was_masked: bool,
+    payload: Vec<u8>,
 }
 
 impl fmt::Display for Message {
@@ -22,15 +23,15 @@ impl fmt::Display for Message {
 impl ops::Add for Message {
     type Output = Message;
 
-    fn add(self, rhs: Message) -> Message {
-        let mut payload = self.payload;
-        payload.push_all(rhs.payload.as_slice());
+    fn add(mut self, rhs: Message) -> Message {
+        self.payload.push_all(rhs.payload.as_slice());
 
         return Message {
             len: self.len + rhs.len,
             opcode: self.opcode,
             is_final: self.is_final | rhs.is_final,
-            payload: payload
+            was_masked: self.was_masked,
+            payload: self.payload
         }
     }
 }
@@ -66,21 +67,17 @@ impl MessageFactory {
         if payload_len < 126 { return (payload_len, 2) }
 	    else if payload_len == 126
 	    {
-            unsafe {
-                payload_len = u16::from_be(*(data.as_ptr().offset(2) as *const u16)) as u64;
-            }
+            unsafe { payload_len = u16::from_be(*(data.as_ptr().offset(2) as *const u16)) as u64 }
             return (payload_len, 4)
 	    }
 	    else
 	    {
-            unsafe {
-                payload_len =  u64::from_be(*(data.as_ptr().offset(2) as *const u64));
-            }
+            unsafe { payload_len =  u64::from_be(*(data.as_ptr().offset(2) as *const u64)) }
             return (payload_len, 10)
 	    }
     }
 
-    // Haskell style ``Deal with it gif is playing``
+    // Haskell style (``Deal with`` it gif is playing)
     fn unmask_data(data: Vec<u8>, mask: [u8; 4]) -> Vec<u8> {
         return mask.into_iter().
                     cycle().
@@ -96,10 +93,13 @@ impl MessageFactory {
         local_data.push_all(data);
 
         // Lets check if we have complete fragment in our data if not
-        // push it back to tthe fragment list
+        // push it back to the fragment list
         let (payload_len, header_len) = Self::get_message_len(&local_data);
 
-        if (payload_len + header_len as u64) as usize > local_data.len() { let _ = self.fragments.insert(*client, local_data); }
+        if (payload_len + header_len as u64) as usize > local_data.len() {
+            let _ = self.fragments.insert(*client, local_data);
+        }
+
         // We've got complete message. Lets process it
         else {
             let is_masked = (data[1] & 128).count_ones() > 0; // This is amazing %)
@@ -117,17 +117,20 @@ impl MessageFactory {
                 len: payload_len,
                 opcode: data[0] & 15,
                 is_final: (data[0] & 128).count_ones() > 0,
+                was_masked: is_masked,
                 payload: local_data
             };
 
-            // Client has incomplete messages. Lets append our message and see what to do
+            // Final message. Lets check if we have previous fragments and
+            // return single or merged result to the user.
             if message.is_final {
                 match self.messages.remove(client) {
                     Some(framed_message) => { return Some(framed_message + message) },
-                    None  => { return Some(message) }
+                    None => { return Some(message) }
                 }
             }
-            // Single message. Lets just return it to the user
+            // Message fragment.
+            // Add it to the list of fragments (merge into previous fragment if exists)
             else {
                 match self.messages.remove(client) {
                     Some(framed_message) => { let _ = self.messages.insert(*client, framed_message + message); },
@@ -136,6 +139,6 @@ impl MessageFactory {
             }
         }
 
-        return None;
+        return None
     }
 }

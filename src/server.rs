@@ -60,36 +60,7 @@ impl<T, C> Handler for WebSocketServer<T, C> where T: WebSocketHandler<C> {
                         println!("Error disconnecting a client {}", e)
                     }
                 } else if events.is_readable() {
-                    // Got a message from the client. Lets get our client data
-                    match self.clients.get_mut(token) {
-                        Some(&mut (ref mut client,
-                                   ref mut stream,
-                                   ref mut handshaked)) => {
-                            let ref mut buffer = [0; 1024];
-
-                            // Read a message from the client socket
-                            match stream.read(buffer) {
-                                Ok(size) if *handshaked => {
-                                    if let Some(message) =  self.message_fac.parse(&buffer[..size], token) {
-                                        self.handler.on_message(message, client)
-                                    }
-                                }
-                                Ok(size) => {
-                                    match Self::create_handshake_response(slice_to_string(&buffer[..size])) {
-                                        Ok(response) => {
-                                            match stream.write_all(response.as_bytes()) {
-                                                Ok(_) => { *handshaked = true }
-                                                Err(e) => { println!("Can't send a handshake response to the client: {}", e) }
-                                            }
-                                        },
-                                        Err(e) => { println!("Failed to handshake a client: {}", e) }
-                                    }
-                                },
-                                Err(e) => { println!("An error occured while reading client socket {}", e) }
-                            }
-                        },
-                        None => { println!("Failed to find a client, which sends a message {:?}", token); }
-                    }
+                    self.read_client_data(token)
                 }
             }
         }
@@ -131,6 +102,50 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
             }
         }
         return Ok(())
+    }
+
+    fn read_client_data(&mut self, token: & Token) {
+        // Got a message from the client. Lets get our client data
+        match self.clients.get_mut(token) {
+            Some(&mut (ref mut client,
+                       ref mut stream,
+                       ref mut handshaked)) => {
+                let ref mut buffer = [0; 1024];
+
+                // Read a message from the client socket
+                match stream.read(buffer) {
+                    Ok(size) if *handshaked => {
+                        if let Some(message) =  self.message_fac.parse(&buffer[..size], token) {
+                            match message.opcode {
+                                message::OPCODE_PING => {
+                                    if let Err(e) =
+                                        stream.write_all(self.message_fac.create_pong_message().get_data().as_slice())
+                                    {
+                                        println!("Can't send pong to the client: {}", e);
+                                    }
+                                }
+                                _ => {
+                                    self.handler.on_message(message, client)
+                                }
+                            }
+                        }
+                    }
+                    Ok(size) => {
+                        match Self::create_handshake_response(slice_to_string(&buffer[..size])) {
+                            Ok(response) => {
+                                match stream.write_all(response.as_bytes()) {
+                                    Ok(_) => { *handshaked = true }
+                                    Err(e) => { println!("Can't send a handshake response to the client: {}", e) }
+                                }
+                            },
+                            Err(e) => { println!("Failed to handshake a client: {}", e) }
+                        }
+                    },
+                    Err(e) => { println!("An error occured while reading client socket {}", e) }
+                }
+            },
+            None => { println!("Failed to find a client, which sends a message {:?}", token); }
+        }
     }
 
     pub fn create_handshake_response(message: String) -> Result<String, String> {

@@ -4,6 +4,7 @@
 extern crate mio;
 extern crate crypto;
 extern crate rustc_serialize;
+extern crate num;
 
 mod utils;
 mod server;

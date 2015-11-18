@@ -7,6 +7,7 @@ authors = [ "Alexander Smoktal <you@example.com>" ]
 mio = "0.4.4"
 rust-crypto = "0.2.34"
 rustc-serialize = "0.3.16"
+num = "0.1.27"
 
 [[bin]]
 name = "web-rockets"

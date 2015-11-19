@@ -1,6 +1,8 @@
 use std::{ fmt, ops };
 use std::vec::Vec;
 use std::collections::HashMap;
+use std::borrow::Borrow;
+use std::io::Write;
 use num;
 
 use mio::*;
@@ -20,46 +22,53 @@ pub const OPCODE_PING: u8 = 0x9;
 #[allow(dead_code)]
 pub const OPCODE_PONG: u8 = 0xA;
 
-pub struct Message {
-    pub opcode: u8,
+pub struct SocketMessage {
     is_final: bool,
     was_masked: bool,
-    payload: Vec<u8>,
+    pub opcode: u8,
+    pub payload: Vec<u8>,
 }
 
-impl Message {
-    pub fn get_data(&self) -> Vec<u8> {
-        let mut result = vec![128 & self.opcode];
+impl SocketMessage {
+    pub fn into_vector(mut self) -> Vec<u8> {
+        let mut result = vec![128 | self.opcode];
 
         if self.payload.len() < 126 { let _ = result.push(self.payload.len() as u8); }
         // Let's assume we'll not have messages longer then 4gb
         else if self.payload.len() < num::pow(2, 32) {
             // Push 126 as indicator and next 2 bytes of exetended len
-            result.push_all(&[126, 0, 0]);
+            result.append(&mut vec![126, 0, 0]);
             unsafe { *(result.as_mut_ptr().offset(2) as *mut u16) = u16::to_be(self.payload.len() as u16); }
         }
         else { panic!("Message is longer then 4gb. Are realy want to do this?"); }
 
         //We have no mask, just append a payload
-        result.push_all(self.payload.as_slice());
+        result.append(&mut self.payload);
 
         return result;
     }
-}
 
-impl fmt::Display for Message {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "{}", slice_to_string(self.payload.as_slice()))
+    pub fn from_string(message: String) -> SocketMessage {
+        return SocketMessage { is_final: true,
+                               was_masked: false,
+                               opcode: OPCODE_TEXT,
+                               payload: Vec::from(message.as_bytes()) }
     }
 }
 
-impl ops::Add for Message {
-    type Output = Message;
+impl fmt::Display for SocketMessage {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "{}", slice_to_string(self.payload.borrow()))
+    }
+}
 
-    fn add(mut self, rhs: Message) -> Message {
-        self.payload.push_all(rhs.payload.as_slice());
+impl ops::Add for SocketMessage {
+    type Output = SocketMessage;
 
-        return Message {
+    fn add(mut self, rhs: SocketMessage) -> SocketMessage {
+        self.payload.append(&mut rhs.payload.clone());
+
+        return SocketMessage {
             opcode: self.opcode,
             is_final: self.is_final | rhs.is_final,
             was_masked: self.was_masked,
@@ -70,7 +79,7 @@ impl ops::Add for Message {
 
 pub struct MessageFactory {
     fragments: HashMap<Token, Vec<u8>>,      // Incomplete data from a reader (if fragment is longer then receiver buffer)
-    messages: HashMap<Token, Message>        // Message without final fragments (unfinished)
+    messages: HashMap<Token, SocketMessage>        // Message without final fragments (unfinished)
 }
 
 impl MessageFactory {
@@ -106,8 +115,8 @@ impl MessageFactory {
     }
 
     #[allow(dead_code)]
-    pub fn create_ping_message(&self) -> Message {
-        return Message {
+    pub fn create_ping_message(&self) -> SocketMessage {
+        return SocketMessage {
             opcode: OPCODE_PING,
             is_final: true,
             was_masked: false,
@@ -115,8 +124,8 @@ impl MessageFactory {
         }
     }
 
-    pub fn create_pong_message(&self) -> Message {
-        return Message {
+    pub fn create_pong_message(&self) -> SocketMessage {
+        return SocketMessage {
             opcode: OPCODE_PONG,
             is_final: true,
             was_masked: false,
@@ -124,11 +133,11 @@ impl MessageFactory {
         }
     }
 
-    pub fn parse(&mut self, data: &[u8], client: &Token) -> Option<Message> {
+    pub fn parse(&mut self, data: &[u8], client: &Token) -> Option<SocketMessage> {
         // First let's check if we have unfinished fragments for current user
         // If true, append current data to the previous segment
         let mut local_data = self.fragments.remove(client).unwrap_or(vec![]);
-        local_data.push_all(data);
+        let _ = local_data.write_all(data);
 
         // Lets check if we have complete fragment in our data if not
         // push it back to the fragment list
@@ -151,7 +160,7 @@ impl MessageFactory {
                 local_data = local_data.split_off(header_len);
             }
 
-            let message = Message {
+            let message = SocketMessage {
                 opcode: data[0] & 15,
                 is_final: (data[0] & 128).count_ones() > 0,
                 was_masked: is_masked,

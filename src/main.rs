@@ -1,6 +1,3 @@
-#![feature(convert)]
-#![feature(vec_push_all)]
-
 extern crate mio;
 extern crate crypto;
 extern crate rustc_serialize;
@@ -8,7 +5,8 @@ extern crate num;
 
 mod utils;
 mod server;
-mod message;
+mod socket_message;
+mod user_message;
 
 use server::WebSocketHandler;
 
@@ -24,8 +22,10 @@ impl server::WebSocketHandler<Client> for Server {
         return Client(42)
     }
 
-    fn on_message(&self, message: message::Message, client: &mut Client) {
-        println!("Got a message from the client {:?} {}", client, message)
+    fn on_message(&self, mut message: user_message::Message, client: &mut Client) {
+        println!("Got a message from the client {:?} {}", client, message);
+
+        let _ = message.reply("Hello my friend!".to_string());
     }
 
     fn on_disconnect(&self, client: Client) {

@@ -1,6 +1,7 @@
 use std::{ net, marker, io, collections,  };
 use std::str::FromStr;
 use std::io::{ Read, Write };
+use std::borrow::Borrow;
 
 use mio::*;
 
@@ -11,7 +12,10 @@ use rustc_serialize::base64;
 use rustc_serialize::base64::ToBase64;
 
 use utils::*;
-use message;
+use socket_message;
+use user_message;
+
+pub use user_message::Message;
 
 const SERVER: Token = Token(0);
 const WEBSOCKET_GUID: &'static str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -32,7 +36,7 @@ pub struct WebSocketServer<T, C> where T: WebSocketHandler<C> {
     // bool - If client was handshaked
     clients: collections::HashMap<Token, (C, tcp::TcpStream, bool)>,
     tokens: TokenFactory,                               // Counter to assign tokens to clients
-    message_fac: message::MessageFactory                // Factory, which produces messages from a raw data
+    message_fac: socket_message::MessageFactory                // Factory, which produces messages from a raw data
 }
 
 impl<T, C> Handler for WebSocketServer<T, C> where T: WebSocketHandler<C> {
@@ -78,7 +82,7 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
             listener:listener,
             clients: collections::HashMap::new(),
             tokens: TokenFactory(1),
-            message_fac: message::MessageFactory::new()
+            message_fac: socket_message::MessageFactory::new()
         };
 
         let mut main_loop = try!(EventLoop::<Self>::new());
@@ -117,15 +121,18 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
                     Ok(size) if *handshaked => {
                         if let Some(message) =  self.message_fac.parse(&buffer[..size], token) {
                             match message.opcode {
-                                message::OPCODE_PING => {
+                                socket_message::OPCODE_PING => {
                                     if let Err(e) =
-                                        stream.write_all(self.message_fac.create_pong_message().get_data().as_slice())
+                                        stream.write_all(self.message_fac.create_pong_message().into_vector().borrow())
                                     {
                                         println!("Can't send pong to the client: {}", e);
                                     }
                                 }
                                 _ => {
-                                    self.handler.on_message(message, client)
+                                    let incoming_message = user_message::Message::new(message.payload,
+                                                                                      stream,
+                                                                                      message.opcode);
+                                    self.handler.on_message(incoming_message, client)
                                 }
                             }
                         }
@@ -161,7 +168,7 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
                     // Calculate response security key
                     Some(key) => {
                         let ref mut sha_object = sha1::Sha1::new();
-                        sha_object.input_str(format!("{}{}", key.trim(), WEBSOCKET_GUID).as_str());
+                        sha_object.input_str(format!("{}{}", key.trim(), WEBSOCKET_GUID).borrow());
 
                         // Seriously `crypto`? Buffer as a parameter?
                         let ref mut buffer = [0; 20]; sha_object.result(buffer);
@@ -200,6 +207,6 @@ pub trait WebSocketHandler<C>: Sized + marker::Sync {
     }
 
     fn on_connect(&self, addr: String) -> C;
-    fn on_message(&self, message: message::Message, client: &mut C);
+    fn on_message(&self, mut message: user_message::Message, client: &mut C);
     fn on_disconnect(&self, client: C);
 }

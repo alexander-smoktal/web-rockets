@@ -60,11 +60,11 @@ impl<T, C> Handler for WebSocketServer<T, C> where T: WebSocketHandler<C> {
                 // Client has been disconnected
                 // TODO: Handle error
                 if events.is_error() || events.is_hup() {
-                    if let Err(e) = self.disconnect_client(*token, main_loop) {
+                    if let Err(e) = self.disconnect_client(token, main_loop) {
                         println!("Error disconnecting a client {}", e)
                     }
                 } else if events.is_readable() {
-                    self.read_client_data(token)
+                    self.read_client_data(token, main_loop)
                 }
             }
         }
@@ -108,7 +108,10 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
         return Ok(())
     }
 
-    fn read_client_data(&mut self, token: & Token) {
+    fn read_client_data(&mut self, token: & Token, main_loop: &mut EventLoop<Self>) {
+        // If got disconnection, will be set to true
+        let mut disconnect = false;
+
         // Got a message from the client. Lets get our client data
         match self.clients.get_mut(token) {
             Some(&mut (ref mut client,
@@ -127,6 +130,9 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
                                     {
                                         println!("Can't send pong to the client: {}", e);
                                     }
+                                }
+                                socket_message::OPCODE_CONNECTION_CLOSE => {
+                                    disconnect = true;
                                 }
                                 _ => {
                                     let incoming_message = user_message::Message::new(message.payload,
@@ -152,6 +158,14 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
                 }
             },
             None => { println!("Failed to find a client, which sends a message {:?}", token); }
+        }
+
+        if disconnect {
+            if let Err(e) =
+                self.disconnect_client(token, main_loop)
+            {
+                println!("Failed to disconnect client properly: {}", e);
+            }
         }
     }
 
@@ -187,8 +201,8 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
         }
     }
 
-    fn disconnect_client(&mut self, token: Token, main_loop: &mut EventLoop<Self>) -> Result<(), String> {
-        match self.clients.remove(&token) {
+    fn disconnect_client(&mut self, token: & Token, main_loop: &mut EventLoop<Self>) -> Result<(), String> {
+        match self.clients.remove(token) {
             Some((client, stream, _)) => {
                 match main_loop.deregister(&stream) {
                     Ok(_) => { self.handler.on_disconnect(client) },

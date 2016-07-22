@@ -1,4 +1,4 @@
-use web_rockets::server::{ WebSocketServer, WebSocketHandler };
+use web_rockets::server::{ WebSocketServer, WebSocketHandler, Message };
 
 struct Client;
 struct Server;
@@ -6,7 +6,7 @@ struct Server;
 impl WebSocketHandler<Client> for Server {
 
     fn on_connect(&self, _: String) -> Client { return Client }
-    fn on_message(&self, _: String, _: &mut Client) {}
+    fn on_message(&self, _: Message, _: &mut Client) {}
     fn on_disconnect(&self, _: Client) {}
 }
 

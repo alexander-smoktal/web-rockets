@@ -33,8 +33,8 @@ pub struct WebSocketServer<T, C> where T: WebSocketHandler<C> {
     // List af all clients:
     // C - User object returned for a new connection
     // TcpStream - Stream we need to delete in case of disconnect
-    // bool - If client was handshaked
-    clients: collections::HashMap<Token, (C, tcp::TcpStream, bool)>,
+    // bool - If client has been handshaked
+    clients: collections::HashMap<Token, (C, (tcp::TcpStream, net::SocketAddr), bool)>,
     tokens: TokenFactory,                               // Counter to assign tokens to clients
     message_fac: socket_message::MessageFactory                // Factory, which produces messages from a raw data
 }
@@ -86,20 +86,20 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
         };
 
         let mut main_loop = try!(EventLoop::<Self>::new());
-        try!(main_loop.register(&result.listener, SERVER));
+        try!(main_loop.register(&result.listener, SERVER, EventSet::readable(), PollOpt::edge()));
         try!(main_loop.run(&mut result));
 
         return Ok(())
     }
 
-    fn register_client(&mut self, client: Option<tcp::TcpStream>, main_loop: &mut EventLoop<Self>) -> Result<(), String> {
+    fn register_client(&mut self, client: Option<(tcp::TcpStream, net::SocketAddr)>, main_loop: &mut EventLoop<Self>) -> Result<(), String> {
         if let Some(client) = client {
             let token = self.tokens.next_token();
 
-            match main_loop.register(&client, token) {
+            match main_loop.register(&client.0, token, EventSet::readable(), PollOpt::edge()) {
                 Err(e) => { return Err(format!("Error registering a client: {}", e)) },
                 _ => {
-                    let addr = format!("{}", client.peer_addr().unwrap());
+                    let addr = format!("{}", client.1);
 
                     let _ = self.clients.insert(token, (self.handler.on_connect(addr), client, false));
                 }
@@ -120,13 +120,13 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
                 let ref mut buffer = [0; 1024];
 
                 // Read a message from the client socket
-                match stream.read(buffer) {
+                match stream.0.read(buffer) {
                     Ok(size) if *handshaked => {
                         if let Some(message) =  self.message_fac.parse(&buffer[..size], token) {
                             match message.opcode {
                                 socket_message::OPCODE_PING => {
                                     if let Err(e) =
-                                        stream.write_all(self.message_fac.create_pong_message().into_vector().borrow())
+                                        stream.0.write_all(self.message_fac.create_pong_message().into_vector().borrow())
                                     {
                                         println!("Can't send pong to the client: {}", e);
                                     }
@@ -136,7 +136,7 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
                                 }
                                 _ => {
                                     let incoming_message = user_message::Message::new(message.payload,
-                                                                                      stream,
+                                                                                      &mut stream.0,
                                                                                       message.opcode);
                                     self.handler.on_message(incoming_message, client)
                                 }
@@ -146,7 +146,7 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
                     Ok(size) => {
                         match Self::create_handshake_response(slice_to_string(&buffer[..size])) {
                             Ok(response) => {
-                                match stream.write_all(response.as_bytes()) {
+                                match stream.0.write_all(response.as_bytes()) {
                                     Ok(_) => { *handshaked = true }
                                     Err(e) => { println!("Can't send a handshake response to the client: {}", e) }
                                 }
@@ -204,7 +204,7 @@ impl<T, C> WebSocketServer<T, C> where T: WebSocketHandler<C> + Sync {
     fn disconnect_client(&mut self, token: & Token, main_loop: &mut EventLoop<Self>) -> Result<(), String> {
         match self.clients.remove(token) {
             Some((client, stream, _)) => {
-                match main_loop.deregister(&stream) {
+                match main_loop.deregister(&stream.0) {
                     Ok(_) => { self.handler.on_disconnect(client) },
                     Err(e) => { return Err(format!("Failed do unregister a client {}", e)) }
                 }
